@@ -1,4 +1,4 @@
-# Fable5 Local Agent
+# GEMMA-4B
 
 Basic local agent UI for Gemma/GGUF models through `llama.cpp`.
 
