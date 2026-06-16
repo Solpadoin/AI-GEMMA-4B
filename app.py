@@ -323,36 +323,47 @@ def extract_action(text: str) -> dict[str, Any] | None:
     return action
 
 
-def safe_path(raw_path: str | None) -> Path:
+def safe_path(raw_path: str | None, unrestricted: bool = False) -> Path:
     if not raw_path:
         raise HTTPException(status_code=400, detail="Missing path")
-    candidate = (WORKSPACE_ROOT / raw_path).resolve()
-    if WORKSPACE_ROOT not in candidate.parents and candidate != WORKSPACE_ROOT:
+    raw = Path(raw_path)
+    candidate = (raw if raw.is_absolute() else WORKSPACE_ROOT / raw).resolve()
+    if not unrestricted and WORKSPACE_ROOT not in candidate.parents and candidate != WORKSPACE_ROOT:
         raise HTTPException(status_code=400, detail="Path escapes workspace")
     return candidate
 
 
-def execute_action(action: dict[str, Any]) -> str:
+def execute_action(action: dict[str, Any], unrestricted_paths: bool = False) -> str:
     tool = action.get("tool")
     if tool == "list_files":
-        root = safe_path(action.get("path", "."))
-        files = [str(path.relative_to(WORKSPACE_ROOT)) for path in root.rglob("*") if path.is_file()]
+        root = safe_path(action.get("path", "."), unrestricted_paths)
+        files = []
+        for path in root.rglob("*"):
+            if path.is_file():
+                try:
+                    files.append(str(path.relative_to(WORKSPACE_ROOT)))
+                except ValueError:
+                    files.append(str(path))
         return "\n".join(files[:300]) or "(no files)"
 
     if tool == "read_file":
-        path = safe_path(action.get("path"))
+        path = safe_path(action.get("path"), unrestricted_paths)
         if not path.exists() or not path.is_file():
             raise HTTPException(status_code=404, detail="File not found")
         return path.read_text(encoding="utf-8", errors="replace")[:40000]
 
     if tool == "write_file":
-        path = safe_path(action.get("path"))
+        path = safe_path(action.get("path"), unrestricted_paths)
         content = action.get("content")
         if not isinstance(content, str):
             raise HTTPException(status_code=400, detail="Missing content")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        return f"Wrote {path.relative_to(WORKSPACE_ROOT)}"
+        try:
+            display_path = path.relative_to(WORKSPACE_ROOT)
+        except ValueError:
+            display_path = path
+        return f"Wrote {display_path}"
 
     if tool == "run_command":
         command = str(action.get("command", "")).strip()
@@ -424,7 +435,7 @@ def run_agent_turn(project: dict[str, Any], settings: dict[str, Any]) -> str:
             return final_text
 
         try:
-            result = execute_action(action)
+            result = execute_action(action, unrestricted_paths=settings.get("access_mode") == "auto_all")
         except Exception as exc:
             result = f"Tool error for {action['tool']}: {exc}"
         project["messages"].append(
@@ -590,7 +601,10 @@ def chat_stream(project_id: str, payload: ChatRequest) -> StreamingResponse:
         )
         if pending_action and can_auto_execute(pending_action, settings):
             try:
-                result = execute_action(pending_action)
+                result = execute_action(
+                    pending_action,
+                    unrestricted_paths=settings.get("access_mode") == "auto_all",
+                )
             except Exception as exc:
                 result = f"Tool error for {pending_action['tool']}: {exc}"
             project_done["messages"].append(
@@ -618,7 +632,7 @@ def approve_action(project_id: str, action_id: str, payload: ApproveRequest) -> 
         raise HTTPException(status_code=404, detail="Pending action not found")
 
     if payload.approved:
-        result = execute_action(action)
+        result = execute_action(action, unrestricted_paths=True)
         project["messages"].append(
             {
                 "role": "tool",

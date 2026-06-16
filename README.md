@@ -78,7 +78,7 @@ The sidebar has three access modes:
 - `Авто-чтение`: the model can list/read files and fetch URLs without confirmation.
 - `Полный авто-доступ`: the model can write files and run commands without confirmation.
 
-Even in full auto mode, filesystem paths are constrained to this repository folder and a small destructive-command blocklist remains active. This is not a VM sandbox.
+In confirmation mode, clicking approve allows that exact action to access paths outside the repository. In full auto mode, filesystem paths are unrestricted. A small destructive-command blocklist remains active. This is not a VM sandbox.
 
 Current supported agent actions:
 
