@@ -111,6 +111,19 @@ Start model server:
 .\scripts\start-llama-server.ps1
 ```
 
+The default server profile is tuned for the tested machine:
+
+- `--n-gpu-layers auto`
+- `--parallel 1`
+- `--cache-type-k f16`
+- `--cache-type-v f16`
+- `--flash-attn auto`
+- `--batch-size 2048`
+- `--ubatch-size 512`
+- `--threads 16`
+
+On the tested RTX 5070 Laptop GPU, this roughly doubled generation speed compared with the first CPU-heavy profile. If your GPU has less VRAM, change `CacheTypeK/CacheTypeV` to `q8_0` or `q4_0`, or set fewer GPU layers.
+
 Start backend:
 
 ```powershell
