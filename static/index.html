@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fable5 Local Agent</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">F5</div>
+        <div>
+          <strong>Gemma 4</strong>
+          <span id="modelState">Проверка модели...</span>
+        </div>
+      </div>
+      <section class="settings-panel">
+        <label class="toggle-row">
+          <span>Thinking</span>
+          <input id="thinkingToggle" type="checkbox" />
+        </label>
+        <label>
+          <span>Доступ</span>
+          <select id="accessMode">
+            <option value="confirm">С подтверждением</option>
+            <option value="auto_read">Авто-чтение</option>
+            <option value="auto_all">Полный авто-доступ</option>
+          </select>
+        </label>
+        <label>
+          <span>Temperature <b id="temperatureValue">1.0</b></span>
+          <input id="temperatureSlider" type="range" min="0" max="1" step="0.05" />
+        </label>
+      </section>
+      <form id="projectForm" class="project-form">
+        <input id="projectName" placeholder="Новый проект" maxlength="80" />
+        <button type="submit">Создать</button>
+      </form>
+      <div id="projects" class="projects"></div>
+    </aside>
+
+    <main class="chat">
+      <header class="chat-header">
+        <div>
+          <h1 id="projectTitle">Выбери проект</h1>
+          <p id="workspace"></p>
+        </div>
+        <div class="header-actions">
+          <span id="runState" class="pill">idle</span>
+          <button id="clearBtn" disabled>Очистить контекст</button>
+          <button id="deleteBtn" disabled>Удалить проект</button>
+        </div>
+      </header>
+
+      <section id="pendingAction" class="pending hidden"></section>
+      <section id="messages" class="messages"></section>
+
+      <form id="chatForm" class="composer">
+        <div id="attachmentList" class="attachments"></div>
+        <div class="composer-box">
+          <textarea id="messageInput" rows="2" placeholder="Напиши задачу для Gemma 4..." disabled></textarea>
+          <div class="composer-actions">
+            <label class="attach-button" title="Прикрепить файлы">
+              +
+              <input id="fileInput" type="file" multiple />
+            </label>
+            <button id="sendBtn" type="submit" disabled>↵</button>
+          </div>
+        </div>
+      </form>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

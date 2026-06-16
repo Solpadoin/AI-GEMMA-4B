@@ -1,0 +1,11 @@
+__pycache__/
+.venv/
+*.pyc
+.env
+
+# Local model files are too large for git.
+models/
+
+# Local chat/project state.
+data/
+logs/
