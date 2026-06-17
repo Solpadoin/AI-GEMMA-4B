@@ -12,3 +12,6 @@ logs/
 
 # Downloaded Goose installer helper.
 download_goose_cli.ps1
+
+# Local runtime downloads and extracted binaries.
+tools/

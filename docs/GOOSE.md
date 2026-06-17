@@ -1,6 +1,6 @@
 # Goose runtime path
 
-This project should not grow a custom agent runtime forever. The preferred real-agent path is Goose, using the local `llama-server` as an OpenAI-compatible provider.
+This project should not grow a custom agent runtime forever. The preferred real-agent path is Goose, using Ollama or the local `llama-server` as the model runtime.
 
 ## Why Goose
 
@@ -46,7 +46,42 @@ The default local OpenAI-compatible server is:
 http://127.0.0.1:8080/v1
 ```
 
-## Run Goose against the local model
+## Recommended local agent model
+
+For this RTX 5070 Laptop / 32 GB RAM machine, the practical agent profile is:
+
+```text
+Runtime: Ollama 0.30+
+Model: qwen3-coder:30b
+Architecture: MoE, 30B total / 3.3B active
+```
+
+Ollama lists this model as a coding/agentic model with tool support and a 256K context window. On this machine, a hot local benchmark at `num_ctx=4096` measured about `30 tok/s` decode with Ollama reporting `68%/32% CPU/GPU`.
+
+Install and pull:
+
+```powershell
+winget install Ollama.Ollama
+$env:PATH = "$env:LOCALAPPDATA\Programs\Ollama;$env:PATH"
+ollama pull qwen3-coder:30b
+.\scripts\benchmark-ollama.ps1
+```
+
+Run Goose with Ollama:
+
+```powershell
+.\scripts\start-goose-ollama.ps1 -Workspace "C:\Users\Admin\Documents\ZM 4.3\CS1.6-ZM-WEBSITE"
+```
+
+This sets:
+
+```text
+GOOSE_PROVIDER=ollama
+GOOSE_MODEL=qwen3-coder:30b
+OLLAMA_HOST=http://127.0.0.1:11434
+```
+
+## Alternative: Goose against llama-server
 
 From the repo you want Goose to work on:
 

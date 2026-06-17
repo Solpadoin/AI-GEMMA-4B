@@ -4,9 +4,18 @@ Basic local agent UI for Gemma/GGUF models through `llama.cpp`.
 
 ## Direction
 
-This repo is being moved from a custom chat prototype toward a Gemma local-model launcher plus a real agent runtime. The preferred runtime path is Goose over the local OpenAI-compatible `llama-server`.
+This repo is being moved from a custom chat prototype toward a Gemma/local-model launcher plus a real agent runtime. The preferred runtime path is Goose over Ollama with `qwen3-coder:30b`, or Goose over the local OpenAI-compatible `llama-server` as a fallback.
 
 See [docs/GOOSE.md](docs/GOOSE.md).
+
+Current high-performance local profile:
+
+```text
+Runtime: Ollama
+Model: qwen3-coder:30b
+MoE: 30B total / 3.3B active
+Measured hot decode: about 30 tok/s at num_ctx=4096 on this RTX 5070 Laptop setup
+```
 
 ## Current Agent Architecture
 

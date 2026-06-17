@@ -11,7 +11,9 @@ param(
   [string]$CacheTypeK = "f16",
   [string]$CacheTypeV = "f16",
   [string]$FlashAttention = "auto",
+  [int]$CacheRam = 0,
   [string]$ChatTemplate = "",
+  [string]$LlamaServerPath = "",
   [switch]$Thinking
 )
 
@@ -19,7 +21,19 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $DefaultLocalModel = Join-Path $Root "models\gemma-4-12B-it-Q4_K_M.gguf"
 
-$LlamaServer = (Get-Command llama-server -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
+if ($LlamaServerPath) {
+  $LlamaServer = $LlamaServerPath
+} else {
+  $LocalCudaServer = Get-ChildItem (Join-Path $Root "tools\llama-cpp-cuda") -Recurse -Filter llama-server.exe -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+  if ($LocalCudaServer) {
+    $LlamaServer = $LocalCudaServer
+  }
+}
+
+if (-not $LlamaServer) {
+  $LlamaServer = (Get-Command llama-server -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
+}
 if (-not $LlamaServer) {
   $LlamaServer = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Recurse -Filter llama-server.exe -ErrorAction SilentlyContinue |
     Select-Object -First 1 -ExpandProperty FullName
@@ -28,6 +42,8 @@ if (-not $LlamaServer) {
 if (-not $LlamaServer) {
   throw "llama-server not found. Run .\scripts\install-llama-cpp.ps1 first."
 }
+
+Write-Host "Using llama-server: $LlamaServer"
 
 $args = @(
   "--host", "127.0.0.1",
@@ -42,7 +58,7 @@ $args = @(
   "--cache-type-k", $CacheTypeK,
   "--cache-type-v", $CacheTypeV,
   "--flash-attn", $FlashAttention,
-  "--cache-ram", 2048
+  "--cache-ram", $CacheRam
 )
 if ($ChatTemplate) {
   $args += @("--chat-template", $ChatTemplate)
