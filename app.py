@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
-import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +13,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+from agent_runtime import AgentRuntime
 
 try:
     from llama_cpp import Llama
@@ -28,41 +28,41 @@ SETTINGS_FILE = APP_ROOT / "data" / "settings.json"
 STATIC_DIR = APP_ROOT / "static"
 MODEL_PATH = Path(os.getenv("MODEL_PATH", APP_ROOT / "models" / "gemma-4-12B-it-Q4_K_M.gguf"))
 WORKSPACE_ROOT = Path(os.getenv("AGENT_WORKSPACE", APP_ROOT)).resolve()
-LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "").rstrip("/")
+LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")
 DEFAULT_SETTINGS = {
     "model_name": os.getenv("MODEL_NAME", "ggml-org/gemma-4-12B-it-GGUF:Q4_K_M"),
     "thinking": os.getenv("ENABLE_THINKING", "0").lower() in {"1", "true", "yes", "on"},
     "temperature": float(os.getenv("TEMPERATURE", "1.0")),
     "top_p": float(os.getenv("TOP_P", "0.95")),
     "top_k": int(os.getenv("TOP_K", "64")),
-    "max_tokens": int(os.getenv("MAX_TOKENS", "512")),
+    "max_tokens": int(os.getenv("MAX_TOKENS", "2048")),
     "access_mode": os.getenv("ACCESS_MODE", "confirm"),
-    "max_tool_steps": int(os.getenv("MAX_TOOL_STEPS", "4")),
+    "agent_mode": os.getenv("AGENT_MODE", "1").lower() in {"1", "true", "yes", "on"},
+    "max_tool_steps": int(os.getenv("MAX_TOOL_STEPS", "8")),
+    "web_search": os.getenv("WEB_SEARCH", "1").lower() in {"1", "true", "yes", "on"},
 }
 
 SYSTEM_PROMPT = """You are a careful local coding assistant.
-You can discuss, edit, and inspect files only through approved actions.
-Never claim you executed a command or changed a file unless a tool result says so.
+You are running on the user's Windows PC through a local tool bridge.
+You CAN inspect local Windows paths such as C:\\Users\\Admin\\Documents\\... when the tool policy allows it.
+You CAN edit files, run PowerShell commands, use git, fetch web pages, open URLs, and search the web through approved actions.
+Never say that you cannot access the user's local disk, PC, files, or repository when a path is provided. Use a tool instead.
+When the user asks you to change code, push git changes, or work with the PC, proactively use tools until the task is actually finished.
+Never claim you executed a command, changed a file, committed, pushed git changes, or opened a browser unless a tool result says so.
 If you need a tool, end your answer with exactly one fenced block:
 ```agent_action
 {"tool":"read_file","path":"relative/path.txt"}
 ```
-Supported tools: list_files, read_file, write_file, run_command, fetch_url, open_url.
-write_file requires path and content. run_command requires command. fetch_url and open_url require url.
-Prefer small, reversible actions and explain why the user should approve them."""
-
-DESTRUCTIVE_COMMANDS = (
-    "Remove-Item",
-    "rm ",
-    "rmdir",
-    "del ",
-    "erase ",
-    "format ",
-    "git reset",
-    "git clean",
-    "shutdown",
-    "Stop-Computer",
-)
+Supported tools: list_files, search_in_files, read_file, write_file, replace_in_file, run_command, search_web, fetch_url, browser_read, inspect_image, open_url.
+search_in_files requires path and query. write_file requires path and content. replace_in_file requires path, old, and new. run_command requires command and may include cwd. search_web requires query. fetch_url/browser_read/open_url require url. inspect_image requires path.
+Windows absolute paths are valid in tool JSON, for example:
+```agent_action
+{"tool":"list_files","path":"C:\\Users\\Admin\\Documents\\ZM 4.3\\CS1.6-ZM-WEBSITE"}
+```
+For a repository edit plus push, inspect/search first, edit, run git diff/status, commit, push, then give a concise final result.
+For git commands in a user-provided repository path, set run_command.cwd to that exact repository path.
+Use search_web when current external information or documentation is needed.
+Prefer small, reversible actions. In auto modes, keep going after each tool result until you can give the final answer."""
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -70,6 +70,7 @@ app = FastAPI(title="Fable5 Local Agent")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 _llm: Any | None = None
+runtime = AgentRuntime(WORKSPACE_ROOT, load_settings=lambda: load_settings())
 
 
 class ProjectCreate(BaseModel):
@@ -78,7 +79,7 @@ class ProjectCreate(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
-    attachments: list[dict[str, str]] = Field(default_factory=list)
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ApproveRequest(BaseModel):
@@ -92,7 +93,9 @@ class SettingsUpdate(BaseModel):
     top_k: int | None = Field(default=None, ge=1, le=200)
     max_tokens: int | None = Field(default=None, ge=16, le=4096)
     access_mode: Literal["confirm", "auto_read", "auto_all"] | None = None
+    agent_mode: bool | None = None
     max_tool_steps: int | None = Field(default=None, ge=0, le=12)
+    web_search: bool | None = None
 
 
 def now_iso() -> str:
@@ -114,9 +117,12 @@ def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def system_prompt(settings: dict[str, Any]) -> str:
+    prompt = SYSTEM_PROMPT
+    prompt += "\nWeb search is currently " + ("enabled." if settings.get("web_search", True) else "disabled. Do not use search_web.")
+    prompt += "\nRuntime capabilities:\n" + json.dumps(runtime.capabilities(), ensure_ascii=False)
     if settings.get("thinking"):
-        return "<|think|>\n" + SYSTEM_PROMPT
-    return SYSTEM_PROMPT
+        return "<|think|>\n" + prompt
+    return prompt
 
 
 def project_path(project_id: str) -> Path:
@@ -141,13 +147,15 @@ def save_project(project: dict[str, Any]) -> None:
 
 
 def public_project(project: dict[str, Any]) -> dict[str, Any]:
+    visible_messages = [msg for msg in project.get("messages", []) if not msg.get("hidden") and msg.get("role") != "tool"]
     return {
         "id": project["id"],
         "name": project["name"],
         "created_at": project["created_at"],
         "updated_at": project["updated_at"],
-        "messages": len(project.get("messages", [])),
+        "messages": len(visible_messages),
         "pending_action": project.get("pending_action"),
+        "has_summary": bool(project.get("summary")),
     }
 
 
@@ -180,6 +188,13 @@ def messages_to_prompt(messages: list[dict[str, str]]) -> str:
     return "\n\n".join(parts)
 
 
+def wants_json_response(messages: list[dict[str, str]]) -> bool:
+    if not messages:
+        return False
+    system = messages[0].get("content", "").lower()
+    return "single json object" in system and "tool" in system
+
+
 def create_chat_completion(messages: list[dict[str, str]], settings: dict[str, Any] | None = None) -> str:
     settings = settings or load_settings()
     if LLAMA_SERVER_URL:
@@ -191,6 +206,8 @@ def create_chat_completion(messages: list[dict[str, str]], settings: dict[str, A
             "top_k": settings["top_k"],
             "max_tokens": settings["max_tokens"],
         }
+        if wants_json_response(messages):
+            payload["response_format"] = {"type": "json_object"}
         try:
             response = httpx.post(
                 f"{LLAMA_SERVER_URL}/v1/chat/completions",
@@ -245,6 +262,8 @@ def stream_chat_completion(messages: list[dict[str, str]], settings: dict[str, A
         "max_tokens": settings["max_tokens"],
         "stream": True,
     }
+    if wants_json_response(messages):
+        payload["response_format"] = {"type": "json_object"}
 
     with httpx.Client(timeout=None) as client:
         try:
@@ -308,112 +327,100 @@ def sse_event(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def extract_action(text: str) -> dict[str, Any] | None:
-    match = re.search(r"```agent_action\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
-    if not match:
-        return None
-    try:
-        action = json.loads(match.group(1))
-    except json.JSONDecodeError:
-        return None
-    if action.get("tool") not in {"list_files", "read_file", "write_file", "run_command", "fetch_url", "open_url"}:
-        return None
-    action["id"] = str(uuid.uuid4())
-    action["created_at"] = now_iso()
-    return action
-
-
-def safe_path(raw_path: str | None, unrestricted: bool = False) -> Path:
-    if not raw_path:
-        raise HTTPException(status_code=400, detail="Missing path")
-    raw = Path(raw_path)
-    candidate = (raw if raw.is_absolute() else WORKSPACE_ROOT / raw).resolve()
-    if not unrestricted and WORKSPACE_ROOT not in candidate.parents and candidate != WORKSPACE_ROOT:
-        raise HTTPException(status_code=400, detail="Path escapes workspace")
-    return candidate
-
-
-def execute_action(action: dict[str, Any], unrestricted_paths: bool = False) -> str:
-    tool = action.get("tool")
-    if tool == "list_files":
-        root = safe_path(action.get("path", "."), unrestricted_paths)
-        files = []
-        for path in root.rglob("*"):
-            if path.is_file():
-                try:
-                    files.append(str(path.relative_to(WORKSPACE_ROOT)))
-                except ValueError:
-                    files.append(str(path))
-        return "\n".join(files[:300]) or "(no files)"
-
-    if tool == "read_file":
-        path = safe_path(action.get("path"), unrestricted_paths)
-        if not path.exists() or not path.is_file():
-            raise HTTPException(status_code=404, detail="File not found")
-        return path.read_text(encoding="utf-8", errors="replace")[:40000]
-
-    if tool == "write_file":
-        path = safe_path(action.get("path"), unrestricted_paths)
-        content = action.get("content")
-        if not isinstance(content, str):
-            raise HTTPException(status_code=400, detail="Missing content")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        try:
-            display_path = path.relative_to(WORKSPACE_ROOT)
-        except ValueError:
-            display_path = path
-        return f"Wrote {display_path}"
-
-    if tool == "run_command":
-        command = str(action.get("command", "")).strip()
-        if not command:
-            raise HTTPException(status_code=400, detail="Missing command")
-        lowered = command.lower()
-        if any(item.lower() in lowered for item in DESTRUCTIVE_COMMANDS):
-            raise HTTPException(status_code=400, detail="Command blocked as destructive")
-        if os.name == "nt":
-            args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]
-        else:
-            args = shlex.split(command)
-        completed = subprocess.run(args, cwd=WORKSPACE_ROOT, text=True, capture_output=True, timeout=60)
-        output = completed.stdout + completed.stderr
-        return output[:40000] or f"Command exited with {completed.returncode}"
-
-    if tool == "fetch_url":
-        url = str(action.get("url", "")).strip()
-        if not url.startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail="Only http(s) URLs are supported")
-        response = httpx.get(url, timeout=30, follow_redirects=True)
-        response.raise_for_status()
-        return response.text[:40000]
-
-    if tool == "open_url":
-        url = str(action.get("url", "")).strip()
-        if not url.startswith(("http://", "https://", "file://")):
-            raise HTTPException(status_code=400, detail="Only http(s) and file URLs are supported")
-        if os.name == "nt":
-            subprocess.Popen(["powershell", "-NoProfile", "-Command", "Start-Process", url], cwd=WORKSPACE_ROOT)
-        else:
-            subprocess.Popen(["xdg-open", url], cwd=WORKSPACE_ROOT)
-        return f"Opened {url}"
-
-    raise HTTPException(status_code=400, detail="Unknown tool")
-
-
-def can_auto_execute(action: dict[str, Any], settings: dict[str, Any]) -> bool:
-    mode = settings.get("access_mode", "confirm")
-    if mode == "auto_all":
-        return True
-    if mode == "auto_read":
-        return action.get("tool") in {"list_files", "read_file", "fetch_url"}
-    return False
-
-
 def build_messages(project: dict[str, Any], settings: dict[str, Any]) -> list[dict[str, str]]:
     messages = [{"role": "system", "content": system_prompt(settings)}]
+    if project.get("summary"):
+        messages.append({"role": "system", "content": "Conversation summary so far:\n" + project["summary"]})
     messages.extend({"role": msg["role"], "content": msg["content"]} for msg in project["messages"][-40:])
     return messages
+
+
+def latest_user_text(project: dict[str, Any]) -> str:
+    for message in reversed(project.get("messages", [])):
+        if message.get("role") == "user":
+            return str(message.get("content", ""))
+    return ""
+
+
+def tool_messages_since_latest_user(project: dict[str, Any]) -> list[dict[str, Any]]:
+    messages = []
+    for message in reversed(project.get("messages", [])):
+        if message.get("role") == "user":
+            return list(reversed(messages))
+        if message.get("role") == "tool":
+            messages.append(message)
+    return list(reversed(messages))
+
+
+def requested_windows_paths(text: str) -> list[str]:
+    return [
+        match.rstrip(" .,/;)")
+        for match in re.findall(r"[A-Za-z]:\\[A-Za-z0-9 ._\\/\-()]+", text)
+    ]
+
+
+def action_uses_path(action: dict[str, Any], path: str) -> bool:
+    normalized = path.lower().rstrip("\\/")
+    values = [
+        str(action.get("path", "")),
+        str(action.get("cwd", "")),
+        str(action.get("command", "")),
+    ]
+    return any(normalized in value.lower().rstrip("\\/") for value in values)
+
+
+def final_evidence_error(project: dict[str, Any], final_action: dict[str, Any]) -> str | None:
+    latest = latest_user_text(project)
+    latest_lower = latest.lower()
+    answer = str(final_action.get("answer", "")).lower()
+    tools = tool_messages_since_latest_user(project)
+    actions = [msg.get("action") or {} for msg in tools]
+    tool_names = [str(action.get("tool", "")) for action in actions]
+    tool_text = "\n".join(str(msg.get("content", "")) for msg in tools).lower()
+
+    if "tool error" in tool_text:
+        return "A previous tool call failed. Do not finish until you recover or clearly report the failure."
+
+    url_requested = bool(re.search(r"https?://\S+", latest))
+    if url_requested and not any(name in {"browser_read", "fetch_url"} for name in tool_names):
+        return "The user asked about a URL. You must use browser_read or fetch_url before final."
+
+    asks_commit = any(word in latest_lower for word in ("commit", "коммит", "закоммит", "заккомит", "заккомить"))
+    asks_push = any(word in latest_lower for word in ("push", "запуш", "запушь", "пуш"))
+    claims_commit = any(word in answer for word in ("committed", "commit", "закоммит", "закомич", "коммит"))
+    claims_push = any(word in answer for word in ("pushed", "push", "запуш", "отправил"))
+
+    git_commands = [str(action.get("command", "")).lower() for action in actions if action.get("tool") == "run_command"]
+    if asks_commit or claims_commit:
+        if not any("git status" in command for command in git_commands):
+            return "Before claiming commit status, run git status in the requested repository."
+        if asks_commit and not any("git commit" in command for command in git_commands):
+            return "The user asked to commit changes. You must run git commit or explicitly prove there were no changes."
+
+    if asks_push or claims_push:
+        if not any("git status" in command for command in git_commands):
+            return "Before claiming push status, run git status in the requested repository."
+        if not any("git push" in command for command in git_commands):
+            return "The user asked to push. You must run git push before final."
+
+    paths = requested_windows_paths(latest)
+    if (asks_commit or asks_push or claims_commit or claims_push) and paths:
+        target = paths[0]
+        if not any(action.get("tool") == "run_command" and action_uses_path(action, target) for action in actions):
+            return f"Git commands must run in the requested repository path: {target}. Use run_command.cwd."
+
+    return None
+
+
+def append_protocol_error(project: dict[str, Any], content: str) -> None:
+    project["messages"].append(
+        {
+            "role": "tool",
+            "content": "Protocol error: " + content,
+            "created_at": now_iso(),
+            "hidden": True,
+        }
+    )
 
 
 def run_agent_turn(project: dict[str, Any], settings: dict[str, Any]) -> str:
@@ -421,30 +428,45 @@ def run_agent_turn(project: dict[str, Any], settings: dict[str, Any]) -> str:
     project["pending_action"] = None
     max_steps = int(settings.get("max_tool_steps", 4))
     for step in range(max_steps + 1):
-        assistant_text = create_chat_completion(build_messages(project, settings), settings)
+        agent_mode = bool(settings.get("agent_mode", True))
+        messages = runtime.build_action_messages(project, settings) if agent_mode else build_messages(project, settings)
+        assistant_text = create_chat_completion(messages, settings)
         final_text = assistant_text
-        action = extract_action(assistant_text)
+        action = runtime.parse_action(assistant_text)
         if not action:
+            if agent_mode and step < max_steps:
+                project["messages"].append(
+                    {
+                        "role": "tool",
+                        "content": "Protocol error: expected one JSON action object. Choose a tool or final.",
+                        "created_at": now_iso(),
+                        "hidden": True,
+                    }
+                )
+                continue
             project["messages"].append({"role": "assistant", "content": assistant_text, "created_at": now_iso()})
             project["pending_action"] = None
             return final_text
 
-        project["messages"].append({"role": "assistant", "content": assistant_text, "created_at": now_iso()})
-        if not can_auto_execute(action, settings):
+        project["messages"].append({"role": "assistant", "content": assistant_text, "created_at": now_iso(), "hidden": True})
+        if action.get("tool") == "final":
+            error = final_evidence_error(project, action)
+            if error and step < max_steps:
+                append_protocol_error(project, error)
+                continue
+            project["messages"].append({"role": "assistant", "content": action.get("answer", ""), "created_at": now_iso()})
+            project["pending_action"] = None
+            return action.get("answer", "")
+
+        if not runtime.can_auto_execute(action, settings):
             project["pending_action"] = action
             return final_text
 
         try:
-            result = execute_action(action, unrestricted_paths=settings.get("access_mode") == "auto_all")
+            result = runtime.execute_action(action, unrestricted_paths=settings.get("access_mode") == "auto_all")
         except Exception as exc:
             result = f"Tool error for {action['tool']}: {exc}"
-        project["messages"].append(
-            {
-                "role": "tool",
-                "content": f"Tool result for {action['tool']}:\n{result}",
-                "created_at": now_iso(),
-            }
-        )
+        runtime.append_tool_result(project, action, result, now_iso)
 
     project["messages"].append(
         {
@@ -456,13 +478,32 @@ def run_agent_turn(project: dict[str, Any], settings: dict[str, Any]) -> str:
     return final_text
 
 
-def format_user_message(message: str, attachments: list[dict[str, str]]) -> str:
+def looks_binary_text(content: str) -> bool:
+    if "\x00" in content:
+        return True
+    if not content:
+        return False
+    sample = content[:4096]
+    bad = sum(1 for char in sample if ord(char) < 32 and char not in "\r\n\t")
+    return bad / max(len(sample), 1) > 0.02
+
+
+def format_user_message(message: str, attachments: list[dict[str, Any]]) -> str:
     if not attachments:
         return message
     parts = [message, "\n\nAttached files:"]
     for item in attachments:
         name = item.get("name", "attachment")
         content = item.get("content", "")
+        if item.get("binary") or looks_binary_text(content):
+            size = item.get("size")
+            file_type = item.get("type", "application/octet-stream")
+            suffix = f", {size} bytes" if size else ""
+            parts.append(
+                f"\n--- {name} ---\n"
+                f"[Binary file omitted: {file_type}{suffix}. The local text model cannot inspect image pixels without a vision/OCR tool.]"
+            )
+            continue
         parts.append(f"\n--- {name} ---\n{content[:60000]}")
     return "\n".join(parts)
 
@@ -491,6 +532,11 @@ def get_settings() -> dict[str, Any]:
     return load_settings()
 
 
+@app.get("/api/capabilities")
+def get_capabilities() -> dict[str, Any]:
+    return runtime.capabilities()
+
+
 @app.post("/api/settings")
 def update_settings(payload: SettingsUpdate) -> dict[str, Any]:
     settings = load_settings()
@@ -516,6 +562,7 @@ def create_project(payload: ProjectCreate) -> dict[str, Any]:
         "updated_at": now_iso(),
         "messages": [],
         "pending_action": None,
+        "summary": "",
     }
     save_project(project)
     return public_project(project)
@@ -539,6 +586,40 @@ def delete_project(project_id: str) -> dict[str, bool]:
 def clear_project(project_id: str) -> dict[str, Any]:
     project = load_project(project_id)
     project["messages"] = []
+    project["pending_action"] = None
+    project["summary"] = ""
+    save_project(project)
+    return project
+
+
+@app.post("/api/projects/{project_id}/compact")
+def compact_project(project_id: str) -> dict[str, Any]:
+    settings = load_settings()
+    project = load_project(project_id)
+    visible = [msg for msg in project.get("messages", []) if not msg.get("hidden") and msg.get("role") != "tool"]
+    if len(visible) < 8:
+        raise HTTPException(status_code=400, detail="Not enough visible messages to compact yet.")
+
+    keep = visible[-6:]
+    old = visible[:-6]
+    transcript = "\n\n".join(f"{msg['role'].upper()}:\n{msg['content']}" for msg in old)[-30000:]
+    previous = project.get("summary", "")
+    summary_prompt = [
+        {
+            "role": "system",
+            "content": (
+                "Summarize this conversation for future context. Keep concrete user goals, decisions, file paths, "
+                "commands/results, bugs, and unresolved tasks. Do not invent facts. Keep it concise."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (f"Previous summary:\n{previous}\n\n" if previous else "") + f"Conversation to compress:\n{transcript}",
+        },
+    ]
+    summary = create_chat_completion(summary_prompt, {**settings, "max_tokens": min(settings.get("max_tokens", 2048), 900)})
+    project["summary"] = split_gemma_channels(summary)["answer"] or summary
+    project["messages"] = keep
     project["pending_action"] = None
     save_project(project)
     return project
@@ -567,59 +648,115 @@ def chat_stream(project_id: str, payload: ChatRequest) -> StreamingResponse:
     project["pending_action"] = None
     save_project(project)
 
-    messages = build_messages(project, settings)
-
     def generate():
-        full_text = ""
         yield sse_event("start", {"project_id": project_id})
-        try:
-            for token in stream_chat_completion(messages, settings):
-                full_text += token
-                parsed = split_gemma_channels(full_text)
-                yield sse_event(
-                    "token",
-                    {
-                        "token": token,
-                        "raw": full_text,
-                        "answer": parsed["answer"],
-                        "thinking": parsed["thinking"],
-                    },
-                )
-        except Exception as exc:
-            yield sse_event("error", {"detail": str(exc)})
-            return
+        max_steps = int(settings.get("max_tool_steps", 4))
 
-        pending_action = extract_action(full_text)
-        project_done = load_project(project_id)
-        project_done["messages"].append(
-            {
-                "role": "assistant",
-                "content": full_text,
-                "created_at": now_iso(),
-                "thinking": split_gemma_channels(full_text)["thinking"],
-            }
-        )
-        if pending_action and can_auto_execute(pending_action, settings):
+        for step in range(max_steps + 1):
+            project_step = load_project(project_id)
+            full_text = ""
+            agent_mode = bool(settings.get("agent_mode", True))
+            messages = runtime.build_action_messages(project_step, settings) if agent_mode else build_messages(project_step, settings)
             try:
-                result = execute_action(
+                for token in stream_chat_completion(messages, settings):
+                    full_text += token
+                    parsed = split_gemma_channels(full_text)
+                    yield sse_event(
+                        "token",
+                        {
+                            "token": token,
+                            "raw": full_text,
+                            "answer": "" if agent_mode else parsed["answer"],
+                            "thinking": parsed["thinking"],
+                            "step": step,
+                        },
+                    )
+            except Exception as exc:
+                yield sse_event("error", {"detail": str(exc)})
+                return
+
+            pending_action = runtime.parse_action(full_text)
+            project_done = load_project(project_id)
+            if not pending_action and agent_mode and step < max_steps:
+                project_done["messages"].append(
+                    {
+                        "role": "tool",
+                        "content": "Protocol error: expected one JSON action object. Choose a tool or final.",
+                        "created_at": now_iso(),
+                        "hidden": True,
+                    }
+                )
+                save_project(project_done)
+                yield sse_event("tool", {"tool": "protocol", "status": "error", "summary": "Invalid tool-call format"})
+                continue
+
+            if pending_action and pending_action.get("tool") == "final":
+                answer = pending_action.get("answer", "")
+                evidence_error = final_evidence_error(project_done, pending_action)
+                if evidence_error and step < max_steps:
+                    append_protocol_error(project_done, evidence_error)
+                    save_project(project_done)
+                    yield sse_event("tool", {"tool": "protocol", "status": "error", "summary": evidence_error})
+                    continue
+                project_done["messages"].append(
+                    {
+                        "role": "assistant",
+                        "content": answer,
+                        "created_at": now_iso(),
+                        "thinking": "",
+                    }
+                )
+                project_done["pending_action"] = None
+                save_project(project_done)
+                yield sse_event("token", {"token": answer, "raw": answer, "answer": answer, "thinking": "", "step": step})
+                yield sse_event("done", project_done)
+                return
+
+            project_done["messages"].append(
+                {
+                    "role": "assistant",
+                    "content": full_text,
+                    "created_at": now_iso(),
+                    "thinking": split_gemma_channels(full_text)["thinking"],
+                    "hidden": bool(pending_action),
+                }
+            )
+
+            if not pending_action:
+                project_done["pending_action"] = None
+                save_project(project_done)
+                yield sse_event("done", project_done)
+                return
+
+            if not runtime.can_auto_execute(pending_action, settings):
+                project_done["pending_action"] = pending_action
+                save_project(project_done)
+                yield sse_event("action_required", {"action": pending_action})
+                yield sse_event("done", project_done)
+                return
+
+            try:
+                result = runtime.execute_action(
                     pending_action,
                     unrestricted_paths=settings.get("access_mode") == "auto_all",
                 )
             except Exception as exc:
                 result = f"Tool error for {pending_action['tool']}: {exc}"
-            project_done["messages"].append(
-                {
-                    "role": "tool",
-                    "content": f"Tool result for {pending_action['tool']}:\n{result}",
-                    "created_at": now_iso(),
-                }
-            )
+            runtime.append_tool_result(project_done, pending_action, result, now_iso)
             project_done["pending_action"] = None
-            yield sse_event("tool", {"action": pending_action, "result": result})
-        else:
-            project_done["pending_action"] = pending_action
-        save_project(project_done)
-        yield sse_event("done", project_done)
+            save_project(project_done)
+            yield sse_event("tool", runtime.public_tool_event(pending_action, result))
+
+        project_limit = load_project(project_id)
+        project_limit["messages"].append(
+            {
+                "role": "assistant",
+                "content": "Reached max tool steps for this turn.",
+                "created_at": now_iso(),
+            }
+        )
+        save_project(project_limit)
+        yield sse_event("done", project_limit)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -632,7 +769,7 @@ def approve_action(project_id: str, action_id: str, payload: ApproveRequest) -> 
         raise HTTPException(status_code=404, detail="Pending action not found")
 
     if payload.approved:
-        result = execute_action(action, unrestricted_paths=True)
+        result = runtime.execute_action(action, unrestricted_paths=True)
         project["messages"].append(
             {
                 "role": "tool",

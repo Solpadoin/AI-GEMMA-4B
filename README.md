@@ -2,6 +2,29 @@
 
 Basic local agent UI for Gemma/GGUF models through `llama.cpp`.
 
+## Current Agent Architecture
+
+- Agent mode is enabled by default and can be switched in the UI.
+- The model chooses the next JSON action itself: a tool call or `final`.
+- Tools do not decide what task should be done; the runtime only validates, executes, applies access policy, and records results.
+- Markdown answers are rendered in the chat.
+- Web search, headless browser reading, context compaction, and sticky composer UI are available from the interface.
+- `inspect_image` reads image metadata locally and can perform semantic image inspection only when `VISION_SERVER_URL` points to an OpenAI-compatible vision endpoint.
+
+## Agent Gate Smoke Test
+
+This browser smoke test opens the local UI, creates a project, and sends this exact prompt to the local model:
+
+```text
+Заккомить все изменения, предвратительно определив их, и запушь в репозиторий в этой же папке
+```
+
+The script does not run git commit or git push itself. It only verifies that the model changed `HEAD`, left the worktree clean, and pushed the branch so it is not ahead of upstream.
+
+```powershell
+.\scripts\agent-commit-push-smoke.ps1 -Repo . -Url http://127.0.0.1:7860/ -Timeout 600
+```
+
 Default model target:
 
 ```text

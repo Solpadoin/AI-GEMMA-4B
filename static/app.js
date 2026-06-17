@@ -1,13 +1,56 @@
-const state = {
+﻿const state = {
   projects: [],
   currentProject: null,
   busy: false,
   config: null,
   settings: null,
+  capabilities: null,
   attachments: [],
+  stickToBottom: true,
 };
 
+const TEXT_EXTENSIONS = new Set([
+  "txt",
+  "md",
+  "json",
+  "js",
+  "ts",
+  "tsx",
+  "jsx",
+  "html",
+  "css",
+  "py",
+  "ps1",
+  "bat",
+  "cmd",
+  "yml",
+  "yaml",
+  "xml",
+  "csv",
+  "log",
+  "sma",
+  "ini",
+  "cfg",
+]);
+
 const $ = (id) => document.getElementById(id);
+
+function formatError(error) {
+  if (!error) return "Unknown error";
+  if (typeof error === "string") return error;
+  if (Array.isArray(error)) return error.map(formatError).join("\n");
+  if (error.detail) return formatError(error.detail);
+  if (error.msg) {
+    const path = Array.isArray(error.loc) ? error.loc.join(".") : "";
+    return path ? `${path}: ${error.msg}` : error.msg;
+  }
+  if (error.message) return String(error.message);
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -16,13 +59,27 @@ async function api(path, options = {}) {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || response.statusText);
+    throw new Error(formatError(body.detail || body || response.statusText));
   }
   return response.json();
 }
 
 function roleLabel(role) {
   return { user: "Ты", assistant: "Модель", tool: "Инструмент" }[role] || role;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;",
+  }[char]));
+}
+
+function stripAgentAction(text) {
+  return String(text || "").replace(/```agent_action\s*\{[\s\S]*?\}\s*```/g, "").trim();
 }
 
 function parseGemmaContent(raw) {
@@ -34,12 +91,73 @@ function parseGemmaContent(raw) {
     thinking = match[1].trim();
     answer = normalized.slice(match.index + match[0].length);
   }
-  answer = answer
-    .replaceAll("<|channel>", "")
-    .replaceAll("<|end_channel|>", "")
-    .replaceAll("<|think|>", "")
-    .trim();
+  answer = stripAgentAction(
+    answer
+      .replaceAll("<|channel>", "")
+      .replaceAll("<|end_channel|>", "")
+      .replaceAll("<|think|>", "")
+      .trim(),
+  );
   return { thinking, answer };
+}
+
+function renderInlineMarkdown(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+}
+
+function markdownToHtml(markdown) {
+  const blocks = [];
+  const text = stripAgentAction(markdown || "");
+  const parts = text.split(/(```[\s\S]*?```)/g);
+
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.startsWith("```")) {
+      const code = part.replace(/^```[a-zA-Z0-9_-]*\n?/, "").replace(/```$/, "");
+      blocks.push(`<pre><code>${escapeHtml(code.trimEnd())}</code></pre>`);
+      continue;
+    }
+
+    const lines = part.split(/\r?\n/);
+    let list = [];
+    const flushList = () => {
+      if (!list.length) return;
+      blocks.push(`<ul>${list.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+      list = [];
+    };
+
+    for (const rawLine of lines) {
+      const line = rawLine.trimEnd();
+      if (!line.trim()) {
+        flushList();
+        continue;
+      }
+      const heading = line.match(/^(#{1,4})\s+(.+)$/);
+      if (heading) {
+        flushList();
+        blocks.push(`<h${heading[1].length}>${renderInlineMarkdown(heading[2])}</h${heading[1].length}>`);
+        continue;
+      }
+      const bullet = line.match(/^\s*(?:[-*]|\d+\.)\s+(.+)$/);
+      if (bullet) {
+        list.push(bullet[1]);
+        continue;
+      }
+      flushList();
+      blocks.push(`<p>${renderInlineMarkdown(line)}</p>`);
+    }
+    flushList();
+  }
+
+  return blocks.join("");
+}
+
+function setMarkdown(node, markdown) {
+  node.innerHTML = markdownToHtml(markdown);
 }
 
 function setRunState(label) {
@@ -48,7 +166,9 @@ function setRunState(label) {
 
 function applySettings(settings) {
   state.settings = settings;
+  $("agentModeToggle").checked = Boolean(settings.agent_mode);
   $("thinkingToggle").checked = Boolean(settings.thinking);
+  $("webSearchToggle").checked = Boolean(settings.web_search);
   $("accessMode").value = settings.access_mode || "confirm";
   $("temperatureSlider").value = String(settings.temperature ?? 1);
   $("temperatureValue").textContent = Number(settings.temperature ?? 1).toFixed(2);
@@ -65,9 +185,18 @@ async function saveSettings(update) {
 
 function updateWorkspaceLabel() {
   if (!state.config || !state.settings) return;
-  $("workspace").textContent = `${state.config.workspace_root} · ${state.settings.max_tokens} токенов · thinking ${
-    state.settings.thinking ? "on" : "off"
-  } · ${state.settings.access_mode}`;
+  $("workspace").textContent = `${state.config.workspace_root} · ${state.settings.max_tokens} токенов · agent ${state.settings.agent_mode ? "on" : "off"} · thinking ${state.settings.thinking ? "on" : "off"} · search ${state.settings.web_search ? "on" : "off"} · ${state.settings.access_mode}`;
+}
+
+function shouldStickToBottom() {
+  const box = $("messages");
+  return box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+}
+
+function scrollToBottom(force = false) {
+  if (!force && !state.stickToBottom) return;
+  const box = $("messages");
+  box.scrollTop = box.scrollHeight;
 }
 
 function renderProjects() {
@@ -81,7 +210,28 @@ function renderProjects() {
   }
 }
 
+function renderCapabilities() {
+  const box = $("capabilities");
+  if (!box || !state.capabilities) return;
+  const labels = {
+    text_files: "Files",
+    shell: "OS",
+    browser: "Browser",
+    web_search: "Search",
+    image_metadata: "Images",
+    vision: "Vision",
+  };
+  box.innerHTML = Object.entries(labels)
+    .map(([key, label]) => {
+      const enabled = Boolean(state.capabilities[key]?.enabled);
+      return `<span class="cap ${enabled ? "on" : "off"}">${label}</span>`;
+    })
+    .join("");
+}
+
 function appendMessage(container, message) {
+  if (message.hidden || message.role === "tool") return null;
+
   const item = document.createElement("article");
   item.className = `message ${message.role}`;
   const role = document.createElement("span");
@@ -102,11 +252,14 @@ function appendMessage(container, message) {
       item.appendChild(details);
     }
     const answer = document.createElement("div");
-    answer.className = "answer";
-    answer.textContent = parsed.answer || message.content || "";
+    answer.className = "answer markdown";
+    setMarkdown(answer, parsed.answer || "Выполняю действие...");
     item.appendChild(answer);
   } else {
-    item.append(document.createTextNode(message.content));
+    const body = document.createElement("div");
+    body.className = "answer";
+    body.textContent = message.content;
+    item.appendChild(body);
   }
 
   container.appendChild(item);
@@ -119,13 +272,14 @@ function renderCurrentProject() {
   $("messageInput").disabled = !project || state.busy;
   $("sendBtn").disabled = !project || state.busy;
   $("clearBtn").disabled = !project || state.busy;
+  $("compactBtn").disabled = !project || state.busy;
   $("deleteBtn").disabled = !project || state.busy;
 
   $("messages").innerHTML = "";
   for (const message of project?.messages || []) {
     appendMessage($("messages"), message);
   }
-  $("messages").scrollTop = $("messages").scrollHeight;
+  scrollToBottom(true);
   renderPendingAction();
   renderAttachments();
 }
@@ -140,7 +294,7 @@ function renderPendingAction() {
   }
   box.classList.remove("hidden");
   box.innerHTML = `
-    <strong>Модель просит разрешение на действие: ${action.tool}</strong>
+    <strong>Модель просит разрешение на действие: ${escapeHtml(action.tool)}</strong>
     <pre>${escapeHtml(JSON.stringify(action, null, 2))}</pre>
     <div class="pending-actions">
       <button id="approveAction">Разрешить</button>
@@ -151,14 +305,15 @@ function renderPendingAction() {
   $("rejectAction").onclick = () => approveAction(action.id, false);
 }
 
-function escapeHtml(value) {
-  return value.replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#039;",
-  }[char]));
+function showActivity(text) {
+  const box = $("activity");
+  box.classList.remove("hidden");
+  box.textContent = text;
+}
+
+function hideActivity() {
+  $("activity").classList.add("hidden");
+  $("activity").textContent = "";
 }
 
 async function refreshProjects() {
@@ -179,16 +334,14 @@ async function withBusy(work) {
   try {
     await work();
   } catch (error) {
-    alert(error.message);
+    alert(formatError(error));
   } finally {
     state.busy = false;
     setRunState("idle");
+    hideActivity();
     await refreshProjects();
-    if (state.currentProject) {
-      await loadProject(state.currentProject.id);
-    } else {
-      renderCurrentProject();
-    }
+    if (state.currentProject) await loadProject(state.currentProject.id);
+    else renderCurrentProject();
   }
 }
 
@@ -218,7 +371,7 @@ function renderAttachments() {
   for (const file of state.attachments) {
     const item = document.createElement("span");
     item.className = "attachment";
-    item.textContent = file.name;
+    item.textContent = file.binary ? `${file.name} (файл)` : file.name;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.textContent = "×";
@@ -249,8 +402,10 @@ async function streamChat(message) {
 
   state.currentProject.messages.push({ role: "user", content: publicUserMessage(message, attachments) });
   renderCurrentProject();
-  const assistantNode = appendMessage($("messages"), { role: "assistant", content: "" });
-  const answerNode = assistantNode.querySelector(".answer");
+  let assistantNode = appendMessage($("messages"), { role: "assistant", content: "" });
+  let answerNode = assistantNode.querySelector(".answer");
+  let thinkingNode = null;
+  scrollToBottom(true);
 
   try {
     const response = await fetch(`/api/projects/${state.currentProject.id}/chat/stream`, {
@@ -260,31 +415,59 @@ async function streamChat(message) {
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      throw new Error(body.detail || response.statusText);
+      throw new Error(formatError(body.detail || body || response.statusText));
     }
 
     await readSse(response, (event, data) => {
       if (event === "token") {
-        answerNode.textContent = data.answer || "";
-        $("messages").scrollTop = $("messages").scrollHeight;
+        if (data.thinking) {
+          if (!thinkingNode) {
+            const details = document.createElement("details");
+            details.className = "thinking";
+            details.open = true;
+            const summary = document.createElement("summary");
+            summary.textContent = "Ход рассуждения";
+            const body = document.createElement("pre");
+            details.append(summary, body);
+            assistantNode.insertBefore(details, answerNode);
+            thinkingNode = body;
+          }
+          thinkingNode.textContent = data.thinking;
+        }
+        setMarkdown(answerNode, data.answer || "Выполняю действие...");
+        scrollToBottom();
+      }
+      if (event === "tool") {
+        const label = data.tool === "search_web" ? "Поиск" : "Инструмент";
+        showActivity(`${label}: ${data.summary || data.tool}`);
+        setRunState(`${data.tool}: ${data.status}`);
+        assistantNode = appendMessage($("messages"), { role: "assistant", content: "" });
+        answerNode = assistantNode.querySelector(".answer");
+        thinkingNode = null;
+        scrollToBottom();
+      }
+      if (event === "action_required") {
+        setRunState("approval needed");
       }
       if (event === "error") {
-        throw new Error(data.detail || "Generation failed");
+        throw new Error(formatError(data.detail || "Generation failed"));
       }
       if (event === "done") {
         state.currentProject = data;
-      }
-      if (event === "tool") {
-        setRunState("tool");
       }
     });
   } finally {
     state.busy = false;
     setRunState("idle");
+    hideActivity();
     await refreshProjects();
     if (state.currentProject) await loadProject(state.currentProject.id);
   }
 }
+
+$("messages").addEventListener("scroll", () => {
+  state.stickToBottom = shouldStickToBottom();
+});
 
 $("projectForm").onsubmit = (event) => {
   event.preventDefault();
@@ -308,7 +491,8 @@ $("chatForm").onsubmit = (event) => {
   streamChat(message).catch((error) => {
     state.busy = false;
     setRunState("idle");
-    alert(error.message);
+    hideActivity();
+    alert(formatError(error));
     renderCurrentProject();
   });
 };
@@ -320,14 +504,32 @@ $("messageInput").addEventListener("keydown", (event) => {
   }
 });
 
+function isTextFile(file) {
+  if (file.type.startsWith("text/")) return true;
+  const extension = file.name.split(".").pop()?.toLowerCase() || "";
+  return TEXT_EXTENSIONS.has(extension);
+}
+
 $("fileInput").addEventListener("change", async (event) => {
   const files = Array.from(event.target.files || []);
   for (const file of files) {
+    if (!isTextFile(file)) {
+      state.attachments.push({
+        id: crypto.randomUUID(),
+        name: file.name,
+        type: file.type || "application/octet-stream",
+        size: file.size,
+        binary: true,
+        content: "",
+      });
+      continue;
+    }
     const content = await file.text();
     state.attachments.push({
       id: crypto.randomUUID(),
       name: file.name,
       type: file.type || "text/plain",
+      size: file.size,
       content,
     });
   }
@@ -335,8 +537,16 @@ $("fileInput").addEventListener("change", async (event) => {
   renderAttachments();
 });
 
+$("agentModeToggle").addEventListener("change", (event) => {
+  saveSettings({ agent_mode: event.target.checked }).catch((error) => alert(formatError(error)));
+});
+
 $("thinkingToggle").addEventListener("change", (event) => {
-  saveSettings({ thinking: event.target.checked }).catch((error) => alert(error.message));
+  saveSettings({ thinking: event.target.checked }).catch((error) => alert(formatError(error)));
+});
+
+$("webSearchToggle").addEventListener("change", (event) => {
+  saveSettings({ web_search: event.target.checked }).catch((error) => alert(formatError(error)));
 });
 
 $("accessMode").addEventListener("change", (event) => {
@@ -348,7 +558,7 @@ $("accessMode").addEventListener("change", (event) => {
       return;
     }
   }
-  saveSettings({ access_mode: value }).catch((error) => alert(error.message));
+  saveSettings({ access_mode: value }).catch((error) => alert(formatError(error)));
 });
 
 $("temperatureSlider").addEventListener("input", (event) => {
@@ -356,8 +566,16 @@ $("temperatureSlider").addEventListener("input", (event) => {
 });
 
 $("temperatureSlider").addEventListener("change", (event) => {
-  saveSettings({ temperature: Number(event.target.value) }).catch((error) => alert(error.message));
+  saveSettings({ temperature: Number(event.target.value) }).catch((error) => alert(formatError(error)));
 });
+
+$("compactBtn").onclick = () => {
+  if (!state.currentProject) return;
+  withBusy(async () => {
+    showActivity("Сжимаю старую переписку в краткий контекст...");
+    state.currentProject = await api(`/api/projects/${state.currentProject.id}/compact`, { method: "POST" });
+  });
+};
 
 $("clearBtn").onclick = () => {
   if (!state.currentProject || !confirm("Очистить контекст проекта?")) return;
@@ -387,6 +605,7 @@ async function approveAction(actionId, approved) {
 
 async function init() {
   state.config = await api("/api/config");
+  state.capabilities = await api("/api/capabilities");
   applySettings(state.config.settings);
   const modelLabel = state.config.model_name || state.config.model_path.split(/[\\/]/).pop();
   $("modelState").textContent = state.config.llama_server_url
@@ -395,12 +614,11 @@ async function init() {
       ? `Файл: ${modelLabel}`
       : "Модель не загружена";
   updateWorkspaceLabel();
+  renderCapabilities();
   await refreshProjects();
-  if (state.projects[0]) {
-    await loadProject(state.projects[0].id);
-  } else {
-    renderCurrentProject();
-  }
+  if (state.projects[0]) await loadProject(state.projects[0].id);
+  else renderCurrentProject();
 }
 
-init().catch((error) => alert(error.message));
+init().catch((error) => alert(formatError(error)));
+

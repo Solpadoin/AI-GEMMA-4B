@@ -15,28 +15,44 @@
           <span id="modelState">Проверка модели...</span>
         </div>
       </div>
+
       <section class="settings-panel">
+        <h2>Agent</h2>
+        <label class="toggle-row">
+          <span>Agent mode</span>
+          <input id="agentModeToggle" type="checkbox" />
+        </label>
         <label class="toggle-row">
           <span>Thinking</span>
           <input id="thinkingToggle" type="checkbox" />
         </label>
+        <label class="toggle-row">
+          <span>Веб-поиск</span>
+          <input id="webSearchToggle" type="checkbox" />
+        </label>
         <label>
-          <span>Доступ</span>
+          <span>Доступ к ПК</span>
           <select id="accessMode">
             <option value="confirm">С подтверждением</option>
             <option value="auto_read">Авто-чтение</option>
             <option value="auto_all">Полный авто-доступ</option>
           </select>
         </label>
+      </section>
+
+      <section class="settings-panel compact-panel">
+        <h2>Model</h2>
         <label>
           <span>Temperature <b id="temperatureValue">1.0</b></span>
           <input id="temperatureSlider" type="range" min="0" max="1" step="0.05" />
         </label>
       </section>
+
       <form id="projectForm" class="project-form">
         <input id="projectName" placeholder="Новый проект" maxlength="80" />
         <button type="submit">Создать</button>
       </form>
+      <div id="capabilities" class="capabilities"></div>
       <div id="projects" class="projects"></div>
     </aside>
 
@@ -48,18 +64,20 @@
         </div>
         <div class="header-actions">
           <span id="runState" class="pill">idle</span>
-          <button id="clearBtn" disabled>Очистить контекст</button>
-          <button id="deleteBtn" disabled>Удалить проект</button>
+          <button id="compactBtn" disabled>Сжать контекст</button>
+          <button id="clearBtn" disabled>Очистить</button>
+          <button id="deleteBtn" disabled>Удалить</button>
         </div>
       </header>
 
       <section id="pendingAction" class="pending hidden"></section>
+      <section id="activity" class="activity hidden"></section>
       <section id="messages" class="messages"></section>
 
       <form id="chatForm" class="composer">
         <div id="attachmentList" class="attachments"></div>
         <div class="composer-box">
-          <textarea id="messageInput" rows="2" placeholder="Напиши задачу для Gemma 4..." disabled></textarea>
+          <textarea id="messageInput" rows="2" placeholder="Напиши задачу для агента..." disabled></textarea>
           <div class="composer-actions">
             <label class="attach-button" title="Прикрепить файлы">
               +
