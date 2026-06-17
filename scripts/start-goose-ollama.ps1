@@ -26,7 +26,8 @@ if (-not $goose) {
 }
 
 if (-not $goose) {
-  throw "goose CLI not found. Run .\scripts\install-goose.ps1 first, then open a new terminal."
+  $installScript = Join-Path (Split-Path -Parent $PSScriptRoot) "scripts\install-goose.ps1"
+  throw "goose CLI not found. Run: powershell -ExecutionPolicy Bypass -File `"$installScript`" -NoConfigure"
 }
 
 try {

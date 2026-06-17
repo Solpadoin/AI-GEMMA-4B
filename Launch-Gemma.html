@@ -24,7 +24,7 @@
         font-family: Segoe UI, system-ui, sans-serif;
       }
       main {
-        width: min(720px, calc(100vw - 32px));
+        width: min(780px, calc(100vw - 32px));
         padding: 28px;
         border: 1px solid var(--border);
         border-radius: 8px;
@@ -65,16 +65,21 @@
   </head>
   <body>
     <main>
-      <h1>Gemma Local Agent</h1>
+      <h1>Gemma Runtime</h1>
       <p>
-        Современный браузер не имеет права сам запускать локальные процессы с HTML-страницы. Поэтому старт сервиса
-        делается через <code>Start-Gemma.bat</code>, а эта страница служит быстрым пультом.
+        Основной агентный режим теперь запускается через Goose + Ollama.
+        Старый web UI на <code>127.0.0.1:7860</code> оставлен как панель состояния и диагностический чат.
+      </p>
+      <p>
+        Если терминал открыт не в папке проекта, используй полный путь или запускай
+        <code>Start-Goose-Ollama.bat</code> из этой директории.
       </p>
       <div class="actions">
-        <a class="primary" href="Start-Gemma.bat">Запустить сервис</a>
-        <a href="Restart-Gemma.bat">Перезапустить</a>
-        <a href="Stop-Gemma.bat">Остановить</a>
-        <a href="http://127.0.0.1:7860/">Открыть UI</a>
+        <a class="primary" href="Start-Goose-Ollama.bat">Запустить Goose + Ollama</a>
+        <a href="Start-Gemma.bat">Запустить diagnostic UI</a>
+        <a href="Restart-Gemma.bat">Перезапустить UI</a>
+        <a href="Stop-Gemma.bat">Остановить UI</a>
+        <a href="http://127.0.0.1:7860/">Открыть Runtime Console</a>
       </div>
     </main>
   </body>
