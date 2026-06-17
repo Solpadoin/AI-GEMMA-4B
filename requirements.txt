@@ -5,3 +5,5 @@ httpx
 pydantic
 playwright
 pillow
+langgraph
+langchain-core

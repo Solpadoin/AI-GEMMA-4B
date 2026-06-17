@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from agent_graph import LangGraphAgentRunner
 from agent_runtime import AgentRuntime
 
 try:
@@ -71,6 +72,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 _llm: Any | None = None
 runtime = AgentRuntime(WORKSPACE_ROOT, load_settings=lambda: load_settings())
+_agent_graph: LangGraphAgentRunner | None = None
 
 
 class ProjectCreate(BaseModel):
@@ -423,7 +425,25 @@ def append_protocol_error(project: dict[str, Any], content: str) -> None:
     )
 
 
+def get_agent_graph() -> LangGraphAgentRunner:
+    global _agent_graph
+    if _agent_graph is None:
+        _agent_graph = LangGraphAgentRunner(
+            runtime=runtime,
+            completion=create_chat_completion,
+            now_iso=now_iso,
+            final_guard=final_evidence_error,
+        )
+    return _agent_graph
+
+
 def run_agent_turn(project: dict[str, Any], settings: dict[str, Any]) -> str:
+    if bool(settings.get("agent_mode", True)):
+        result = get_agent_graph().run(project, settings)
+        project.clear()
+        project.update(result["project"])
+        return str(result.get("final") or result.get("assistant_text") or "")
+
     final_text = ""
     project["pending_action"] = None
     max_steps = int(settings.get("max_tool_steps", 4))
@@ -650,6 +670,34 @@ def chat_stream(project_id: str, payload: ChatRequest) -> StreamingResponse:
 
     def generate():
         yield sse_event("start", {"project_id": project_id})
+        if bool(settings.get("agent_mode", True)):
+            project_graph = load_project(project_id)
+            tool_events: list[dict[str, str]] = []
+            try:
+                result = get_agent_graph().run(project_graph, settings, on_tool=tool_events.append)
+            except Exception as exc:
+                yield sse_event("error", {"detail": str(exc)})
+                return
+            project_result = result["project"]
+            save_project(project_result)
+            for event in tool_events:
+                yield sse_event("tool", event)
+            if result.get("pending_action"):
+                yield sse_event("action_required", {"action": result["pending_action"]})
+            if result.get("final"):
+                yield sse_event(
+                    "token",
+                    {
+                        "token": result["final"],
+                        "raw": result["final"],
+                        "answer": result["final"],
+                        "thinking": "",
+                        "step": result.get("step", 0),
+                    },
+                )
+            yield sse_event("done", project_result)
+            return
+
         max_steps = int(settings.get("max_tool_steps", 4))
 
         for step in range(max_steps + 1):
