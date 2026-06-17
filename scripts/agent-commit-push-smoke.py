@@ -62,7 +62,7 @@ def main() -> int:
         description="Browser smoke test that asks the local model to commit and push the current repository."
     )
     parser.add_argument("--repo", default=".", help="Repository path to verify after the model acts.")
-    parser.add_argument("--url", default="http://127.0.0.1:7860/", help="Running Fable5 UI URL.")
+    parser.add_argument("--url", default="http://127.0.0.1:7860/", help="Running Gemma UI URL.")
     parser.add_argument("--timeout", type=int, default=600, help="Seconds to wait for commit+push.")
     parser.add_argument("--headed", action="store_true", help="Show the browser window.")
     args = parser.parse_args()

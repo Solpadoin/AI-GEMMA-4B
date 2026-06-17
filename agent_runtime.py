@@ -370,7 +370,7 @@ def search_web(query: str) -> str:
         params={"q": query},
         timeout=30,
         follow_redirects=True,
-        headers={"User-Agent": "Mozilla/5.0 Fable5 Local Agent"},
+        headers={"User-Agent": "Mozilla/5.0 Gemma Local Agent"},
     )
     response.raise_for_status()
     html = response.text

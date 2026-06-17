@@ -7,4 +7,4 @@ Get-CimInstance Win32_Process |
   } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
-Write-Host "Fable5 local services stopped."
+Write-Host "Gemma local services stopped."

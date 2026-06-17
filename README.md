@@ -2,6 +2,12 @@
 
 Basic local agent UI for Gemma/GGUF models through `llama.cpp`.
 
+## Direction
+
+This repo is being moved from a custom chat prototype toward a Gemma local-model launcher plus a real agent runtime. The preferred runtime path is Goose over the local OpenAI-compatible `llama-server`.
+
+See [docs/GOOSE.md](docs/GOOSE.md).
+
 ## Current Agent Architecture
 
 - Agent mode is enabled by default and can be switched in the UI.
@@ -33,14 +39,14 @@ Default model target:
 ggml-org/gemma-4-12B-it-GGUF:Q4_K_M
 ```
 
-The old Q2 coder model is kept only as a downloaded experiment. It produced broken channel/token output on this machine, so Q4 Gemma 4 12B IT is now the preferred path.
+The old Q2 coder experiment was removed from the launcher path. It produced broken channel/token output on this machine, so Q4 Gemma 4 12B IT is now the preferred local model.
 
 ## Quick Start
 
 Double-click:
 
 ```text
-Start-Fable5.bat
+Start-Gemma.bat
 ```
 
 It will:
@@ -54,16 +60,16 @@ It will:
 For a clean restart:
 
 ```text
-Restart-Fable5.bat
+Restart-Gemma.bat
 ```
 
 To stop local services:
 
 ```text
-Stop-Fable5.bat
+Stop-Gemma.bat
 ```
 
-There is also `Launch-Fable5.html`, but browsers cannot securely start local processes by themselves. It is only a small launcher page with links to the BAT files and UI.
+There is also `Launch-Gemma.html`, but browsers cannot securely start local processes by themselves. It is only a small launcher page with links to the BAT files and UI.
 
 ## Features
 
@@ -108,13 +114,19 @@ In confirmation mode, clicking approve allows that exact action to access paths 
 Current supported agent actions:
 
 - `list_files`
+- `search_in_files`
 - `read_file`
 - `write_file`
+- `replace_in_file`
 - `run_command`
+- `search_web`
 - `fetch_url`
+- `browser_read`
+- `inspect_image`
 - `open_url`
+- `final`
 
-Browser access is intentionally minimal. The local agent can fetch web pages by URL and open URLs in the default browser. It does not yet control browser tabs like Codex does with its in-app Browser plugin.
+The built-in FastAPI chat loop is now a diagnostic/prototype layer. Use Goose for the serious agent path.
 
 ## Attachments
 

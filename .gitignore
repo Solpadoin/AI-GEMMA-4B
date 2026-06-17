@@ -9,3 +9,6 @@ models/
 # Local chat/project state.
 data/
 logs/
+
+# Downloaded Goose installer helper.
+download_goose_cli.ps1

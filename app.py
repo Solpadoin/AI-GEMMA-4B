@@ -67,7 +67,7 @@ Prefer small, reversible actions. In auto modes, keep going after each tool resu
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Fable5 Local Agent")
+app = FastAPI(title="Gemma Local Agent")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 _llm: Any | None = None
