@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Gemma Local Agent</title>
+    <title>Gemma Runtime Console</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -11,13 +11,30 @@
       <div class="brand">
         <div class="logo">G</div>
         <div>
-          <strong>Gemma 4</strong>
-          <span id="modelState">Проверка модели...</span>
+          <strong>Gemma Runtime</strong>
+          <span id="modelState">Проверка runtime...</span>
         </div>
       </div>
 
+      <section class="runtime-panel">
+        <div class="runtime-title">
+          <span>Рабочий агент</span>
+          <b id="runtimeBadge">Goose + Ollama</b>
+        </div>
+        <p id="runtimeSummary">Загружаю состояние Ollama, Goose и legacy llama-server.</p>
+        <div id="runtimeCards" class="runtime-cards"></div>
+      </section>
+
+      <section class="settings-panel legacy-panel">
+        <h2>Legacy UI</h2>
+        <p>
+          Этот чат оставлен для диагностики старого прототипа. Полноценные задачи с файлами,
+          git, браузером и ОС должны идти через Goose.
+        </p>
+      </section>
+
       <section class="settings-panel">
-        <h2>Agent</h2>
+        <h2>Прототип</h2>
         <label class="toggle-row">
           <span>Agent mode</span>
           <input id="agentModeToggle" type="checkbox" />
@@ -41,7 +58,7 @@
       </section>
 
       <section class="settings-panel compact-panel">
-        <h2>Model</h2>
+        <h2>Модель прототипа</h2>
         <label>
           <span>Temperature <b id="temperatureValue">1.0</b></span>
           <input id="temperatureSlider" type="range" min="0" max="1" step="0.05" />
@@ -49,7 +66,7 @@
       </section>
 
       <form id="projectForm" class="project-form">
-        <input id="projectName" placeholder="Новый проект" maxlength="80" />
+        <input id="projectName" placeholder="Новый диагностический проект" maxlength="80" />
         <button type="submit">Создать</button>
       </form>
       <div id="capabilities" class="capabilities"></div>
@@ -59,7 +76,7 @@
     <main class="chat">
       <header class="chat-header">
         <div>
-          <h1 id="projectTitle">Выбери проект</h1>
+          <h1 id="projectTitle">Диагностический чат</h1>
           <p id="workspace"></p>
         </div>
         <div class="header-actions">
@@ -70,6 +87,14 @@
         </div>
       </header>
 
+      <section class="route-banner">
+        <div>
+          <strong>Как сейчас общаться с агентом</strong>
+          <span>Основной путь: Goose → Ollama → qwen3-coder:30b → инструменты Goose. Этот экран показывает состояние и хранит старый диагностический чат.</span>
+        </div>
+        <code id="gooseCommand">powershell -ExecutionPolicy Bypass -File ".\scripts\start-goose-ollama.ps1"</code>
+      </section>
+
       <section id="pendingAction" class="pending hidden"></section>
       <section id="activity" class="activity hidden"></section>
       <section id="messages" class="messages"></section>
@@ -77,7 +102,7 @@
       <form id="chatForm" class="composer">
         <div id="attachmentList" class="attachments"></div>
         <div class="composer-box">
-          <textarea id="messageInput" rows="2" placeholder="Напиши задачу для агента..." disabled></textarea>
+          <textarea id="messageInput" rows="2" placeholder="Legacy diagnostic chat. Для настоящих агентных задач запускай Goose." disabled></textarea>
           <div class="composer-actions">
             <label class="attach-button" title="Прикрепить файлы">
               +

@@ -5,6 +5,7 @@
   config: null,
   settings: null,
   capabilities: null,
+  runtimeStatus: null,
   attachments: [],
   stickToBottom: true,
 };
@@ -226,6 +227,50 @@ function renderCapabilities() {
       const enabled = Boolean(state.capabilities[key]?.enabled);
       return `<span class="cap ${enabled ? "on" : "off"}">${label}</span>`;
     })
+    .join("");
+}
+
+function renderRuntimeStatus() {
+  if (!state.runtimeStatus) return;
+  const runtime = state.runtimeStatus;
+  const ollama = runtime.ollama || {};
+  const llama = runtime.llama_server || {};
+  const goose = runtime.goose || {};
+  const cards = $("runtimeCards");
+  const ollamaModel = (ollama.models || [])[0]?.name || goose.model || "qwen3-coder:30b";
+
+  $("runtimeBadge").textContent = runtime.recommended_path === "goose_ollama" ? "Goose + Ollama" : "Legacy";
+  $("runtimeSummary").textContent = ollama.ok
+    ? `Ollama доступен на ${ollama.url}. Рекомендуемая модель: ${ollamaModel}.`
+    : `Ollama недоступен на ${ollama.url}. Сначала запусти Ollama или проверь установку.`;
+  $("gooseCommand").textContent = goose.command || 'powershell -ExecutionPolicy Bypass -File ".\\scripts\\start-goose-ollama.ps1"';
+
+  cards.innerHTML = [
+    {
+      title: "Ollama",
+      ok: ollama.ok,
+      detail: ollama.ok ? `${ollamaModel} готов для Goose` : ollama.detail,
+    },
+    {
+      title: "Goose",
+      ok: Boolean(goose.start_script),
+      detail: goose.start_script || "Скрипт запуска не найден",
+    },
+    {
+      title: "Legacy llama-server",
+      ok: llama.ok,
+      detail: llama.ok ? llama.url : `выключен: ${llama.detail || llama.url}`,
+    },
+  ]
+    .map(
+      (item) => `
+        <div class="runtime-card ${item.ok ? "ok" : "warn"}">
+          <span>${escapeHtml(item.title)}</span>
+          <b>${item.ok ? "online" : "offline"}</b>
+          <small>${escapeHtml(item.detail || "")}</small>
+        </div>
+      `,
+    )
     .join("");
 }
 
@@ -606,13 +651,16 @@ async function approveAction(actionId, approved) {
 async function init() {
   state.config = await api("/api/config");
   state.capabilities = await api("/api/capabilities");
+  state.runtimeStatus = await api("/api/runtime/status");
   applySettings(state.config.settings);
-  const modelLabel = state.config.model_name || state.config.model_path.split(/[\\/]/).pop();
-  $("modelState").textContent = state.config.llama_server_url
-    ? `Сервер: ${modelLabel}`
-    : state.config.model_exists
-      ? `Файл: ${modelLabel}`
-      : "Модель не загружена";
+  renderRuntimeStatus();
+  const ollamaModels = state.runtimeStatus.ollama?.models || [];
+  const modelLabel = ollamaModels[0]?.name || state.config.model_name || state.config.model_path.split(/[\\/]/).pop();
+  $("modelState").textContent = state.runtimeStatus.ollama?.ok
+    ? `Ollama: ${modelLabel}`
+    : state.config.llama_server_url
+      ? "Legacy llama-server недоступен"
+      : "Runtime не запущен";
   updateWorkspaceLabel();
   renderCapabilities();
   await refreshProjects();

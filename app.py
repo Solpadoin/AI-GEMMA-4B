@@ -30,6 +30,7 @@ STATIC_DIR = APP_ROOT / "static"
 MODEL_PATH = Path(os.getenv("MODEL_PATH", APP_ROOT / "models" / "gemma-4-12B-it-Q4_K_M.gguf"))
 WORKSPACE_ROOT = Path(os.getenv("AGENT_WORKSPACE", APP_ROOT)).resolve()
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")
+OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 DEFAULT_SETTINGS = {
     "model_name": os.getenv("MODEL_NAME", "ggml-org/gemma-4-12B-it-GGUF:Q4_K_M"),
     "thinking": os.getenv("ENABLE_THINKING", "0").lower() in {"1", "true", "yes", "on"},
@@ -544,6 +545,51 @@ def config() -> dict[str, Any]:
         "llama_server_url": LLAMA_SERVER_URL,
         "n_ctx": int(os.getenv("N_CTX", "8192")),
         "settings": settings,
+    }
+
+
+@app.get("/api/runtime/status")
+def runtime_status() -> dict[str, Any]:
+    llama = {"url": LLAMA_SERVER_URL, "ok": False, "detail": "disabled" if not LLAMA_SERVER_URL else ""}
+    if LLAMA_SERVER_URL:
+        try:
+            response = httpx.get(f"{LLAMA_SERVER_URL}/v1/models", timeout=2)
+            response.raise_for_status()
+            llama = {"url": LLAMA_SERVER_URL, "ok": True, "detail": "OpenAI-compatible llama-server is reachable"}
+        except Exception as exc:
+            llama = {"url": LLAMA_SERVER_URL, "ok": False, "detail": str(exc)}
+
+    ollama_models: list[dict[str, Any]] = []
+    ollama = {"url": OLLAMA_URL, "ok": False, "detail": "", "models": ollama_models}
+    try:
+        response = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=2)
+        response.raise_for_status()
+        ollama_models = response.json().get("models", [])
+        ollama = {
+            "url": OLLAMA_URL,
+            "ok": True,
+            "detail": "Ollama is reachable",
+            "models": ollama_models,
+        }
+    except Exception as exc:
+        ollama = {"url": OLLAMA_URL, "ok": False, "detail": str(exc), "models": []}
+
+    goose_script = APP_ROOT / "scripts" / "start-goose-ollama.ps1"
+    recommended_model = "qwen3-coder:30b"
+    loaded_model = next(
+        (model for model in ollama_models if model.get("name") == recommended_model),
+        ollama_models[0] if ollama_models else None,
+    )
+    return {
+        "recommended_path": "goose_ollama",
+        "ui_role": "diagnostic",
+        "ollama": ollama,
+        "llama_server": llama,
+        "goose": {
+            "start_script": str(goose_script),
+            "model": loaded_model.get("name") if loaded_model else recommended_model,
+            "command": f'powershell -ExecutionPolicy Bypass -File "{goose_script}"',
+        },
     }
 
 
